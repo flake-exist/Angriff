@@ -40,6 +40,51 @@ object CONSTANTS {
     chains
   }
 
+  def htsTube(arr         : Seq[Map[String,Long]],
+                  contact_pos : String = GLUE_SYMBOL_POS,
+                  contact_neg : String = GLUE_SYMBOL_NEG,
+                  transit     : String = "=>"
+                 )            : Seq[String] = {
+    //Create user paths
+    val htsSeq = arr.map{elem => elem match {
+      case conversion if(elem.keys.head.endsWith(contact_pos)) => elem.values.head.toString + contact_pos
+      case touch if(elem.keys.head.endsWith(contact_neg))      => elem.values.head.toString + contact_neg
+    }}
+    htsSeq
+  }
+
+  def searchInception(arr:Seq[Map[String,Long]],date_start:Long,no_conversion:String):Seq[Map[String,Long]] = {
+    val arr_reverse = arr.reverse
+    val (before,after) = arr_reverse.partition(elem =>elem(elem.keySet.head) < date_start)
+    val before_sort = before.takeWhile(elem => elem.keySet.head.endsWith(no_conversion))
+    val r = before_sort.reverse  ++ after.reverse
+//    val result = r.map(_.keys.head)
+//    result
+    r
+  }
+
+  def channelTube(arr:Seq[Map[String,Long]]):Seq[String] = {
+    arr.map(_.keys.head)
+  }
+
+  def extractValue(arr:Seq[Map[String,Long]]):Seq[String] = {
+    arr.map(_.values.head.toString)
+  }
+
+
+
+//  def htsSeqCreatorTail(arr:Seq[Map[String,Long]],date_start:Long,no_conversion:String):Seq[Long] = {
+//    val arr_reverse = arr.reverse
+//    val (before,after) = arr_reverse.partition(elem =>elem(elem.keySet.head) < date_start)
+//    val before_sort = before.takeWhile(elem => elem.keySet.head.endsWith(no_conversion))
+//    val r = before_sort.reverse  ++ after.reverse
+//    val result = r.map(_.values.head)
+//    result
+//  }
+
+
+
+
   def channel_creator(
                        src:String,
                        ga_sourcemedium : String,
@@ -90,18 +135,52 @@ object CONSTANTS {
     optionsMap
   }
 
+  //Check input arguments types
+  def argsValid(optionsMap:collection.mutable.Map[String,String]):collection.mutable.Map[String,Any] = {
+
+    val validMap = collection.mutable.Map[String,Any]()
+
+    val arg_keys = optionsMap.keys.toList //Extract keys (--option)
+
+    //check if each argument is in necessary argument list (`necessary_args`)
+    val args_status = necessary_args.map(arg_keys.contains(_)).forall(_ == true) match {
+      case true => "correct"
+      case _    => throw new Exception(usage)
+    }
+
+    validMap += "date_start"   -> optionsMap("date_start").trim
+    validMap += "date_finish"  -> optionsMap("date_finish").trim
+    validMap += "product_name" -> optionsMap("product_name").trim
+    validMap += "output_path"  -> optionsMap("output_path").trim
+
+    try {
+      validMap  += "target_numbers" -> optionsMap("target_numbers").split(",").map(_.trim).map(_.toLong)
+    } catch {
+      case _: Throwable => throw new Exception("target_numbers : Convert error")
+    }
+
+    try {
+      validMap += "source_platform" -> optionsMap("source_platform").split(",").map(_.trim)
+    } catch {
+      case _ : Throwable => throw new Exception("source_platform : Convert error")
+    }
+
+    try {
+      validMap += "projectID" -> optionsMap("projectID").toLong
+    } catch {
+      case _ : Throwable => throw new Exception("projectID : Convert error")
+    }
+
+    try {
+      validMap += "flat_path" -> optionsMap("flat_path").split(",").map(_.trim)
+    } catch {
+      case _ : Throwable => throw new Exception("flat_path : Convert error")
+    }
+
+    validMap
   }
 
-//Class for parsing input json file. Used with input one argument - JSON file
-case class Jvalue(date_start      : String,
-                  date_finish     : String,
-                  product_name    : String,
-                  projectID       : Long,
-                  target_numbers  : Array[Long],
-                  source_platform : Array[String],
-                  flat_path       : String,
-                  output_path     : String
-                 )
+  }
 
 //Class for collecting input args and its values from command line
 case class ArgValue(date_start    : String,
@@ -111,6 +190,17 @@ case class ArgValue(date_start    : String,
                   target_numbers  : Array[Long],
                   source_platform : Array[String],
                   flat_path       : Array[String],
+                  output_path     : String
+                 )
+
+//Class for parsing input json file. Used with input one argument - JSON file
+case class Jvalue(date_start      : String,
+                  date_finish     : String,
+                  product_name    : String,
+                  projectID       : Long,
+                  target_numbers  : Array[Long],
+                  source_platform : Array[String],
+                  flat_path       : String,
                   output_path     : String
                  )
 

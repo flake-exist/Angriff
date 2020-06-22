@@ -3,6 +3,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.SparkContext._
 import org.apache.spark.sql
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.Encoders
 import org.apache.spark.sql.SparkSession
 
@@ -65,8 +66,12 @@ object ChainBuilder_v3 {
     //REGISTRATION
     val path_creator_udf = spark.udf.register("path_creator",pathCreator(_:Seq[String],_:String):Array[String])
     val channel_creator_udf = spark.udf.register("channel_creator",channel_creator(_:String,_:String,_:String,_:String,_:String,_:String):String)
-    val path_creatorTail_udf = spark.udf.register("path_creatorTail",pathCreatorTail(_:Seq[Map[String,Long]],_:Long,_:String):Seq[String])
-    val hts_creator_udf = spark.udf.register("htsCreator",htsCreator(_:Seq[Map[String,Long]]):Seq[Array[Long]])
+    val searchInception_udf = spark.udf.register("searchInception",searchInception(_:Seq[Map[String,Long]],_:Long,_:String):Seq[Map[String,Long]])
+    val htsTube_udf = spark.udf.register("htsTube",htsTube(_:Seq[Map[String,Long]]):Seq[String])
+    val channelTube_udf = spark.udf.register("channelTube",channelTube(_:Seq[Map[String,Long]]):Seq[String])
+    val extract_value_udf = spark.udf.register("extractValue",extractValue(_:Seq[Map[String,Long]]):Seq[String])
+
+
     //REGISTRATION
 
 
@@ -103,9 +108,8 @@ object ChainBuilder_v3 {
     //Customize data by source (`source_platform`) and current product (`product_name`) if exists
     val data_custom_1 = arg_value.product_name match {
       case product if isEmpty(product) => data_custom_0.filter($"src".isin(arg_value.source_platform:_*))
-      case product                     => data_custom_0.filter($"src".
-        isin(arg_value.source_platform:_*)).
-        filter($"ga_location" === arg_value.product_name)
+      case product                     => data_custom_0.filter($"src".isin(arg_value.source_platform:_*)).
+                                          filter($"ga_location" === arg_value.product_name)
     }
 
     /*
@@ -158,69 +162,85 @@ object ChainBuilder_v3 {
 
     val data_touch = data_union.withColumn("touch_data",map($"channel_conv",$"HitTimeStamp"))
 
-    val data_group = data_touch.groupBy($"ClientID").agg(collect_list($"touch_data").as("touch_data_arr")).cache()
+    val data_group = data_touch.groupBy($"ClientID").agg(collect_list($"touch_data").as("touch_data_arr"))
+
+    val data_touchTube_cache = data_group.select(
+      $"ClientID",
+      searchInception_udf($"touch_data_arr",lit(date_pure(0)),lit(NO_CONVERSION_SYMBOL)).as("touch_data_arr"))
+      .cache()
 
     //---TIME---
 
-//    val test =  data_group.select(
-//      $"ClientID",
-//      path_creator_udf($"touch_data_arr",lit("success")).as("paths"),
-//      hts_creator_udf($"touch_data_arr").as("paths_hts"))
-//
-//    val test1 = test.withColumn("path_zip_hts",explode(arrays_zip($"paths",$"paths_hts"))).
-//      select($"ClientID",$"path_zip_hts.paths",$"path_zip_hts.paths_hts")
-//
-//    test1.coalesce(1).
-//      write.format("csv").
-//      option("header","true").
-//      mode("overwrite").
-//      save("/home/eva91/Documents/OMD/hts")
+    val data_bulk_HTS = data_touchTube_cache.select(
+      $"ClientID",
+      channelTube_udf($"touch_data_arr").as("channel_seq"),
+      htsTube_udf($"touch_data_arr").as("hts_seq"))
+
+
+    val data_seq = data_bulk_HTS.select(
+      $"ClientID",
+      path_creator_udf($"channel_seq",lit("success")).as("channel_paths_arr"),
+      path_creator_udf($"hts_seq",lit("success")).as("hts_paths_arr")
+    )
+
+    val data_pathInfo = data_seq.withColumn("path_zip_hts",explode(arrays_zip($"channel_paths_arr",$"hts_paths_arr"))).
+      select(
+        $"ClientID",
+        $"path_zip_hts.channel_paths_arr".as("ch"),
+        $"path_zip_hts.hts_paths_arr".as("hts")
+      )
+
+    data_pathInfo.coalesce(1).
+        write.format("csv").
+        option("header","true").
+        mode("overwrite").
+        save("/home/eva91/Documents/OMD/hts")
 
     //---TIME---
 
-    val data_channelSeq = data_group.select($"ClientID",path_creatorTail_udf($"touch_data_arr",lit(date_pure(0)),lit(NO_CONVERSION_SYMBOL)).as("touch_data_arr"))
+    //---CHANNEL---
 
-    data_channelSeq.printSchema()
-
-    val data_assembly_cache = data_channelSeq.cache()
-
+    val data_bulk_CHNL_cache = data_touchTube_cache.select(
+      $"ClientID",
+      channelTube_udf($"touch_data_arr").as("channel_seq")
+    )
 
     //Create user successful paths(chains)
-    val data_path_success = data_assembly_cache.select(
+    val data_path_success = data_bulk_CHNL_cache.select(
       $"ClientID",
-      path_creator_udf($"touch_data_arr",lit("success")).as("paths")
+      path_creator_udf($"channel_seq",lit("success")).as("paths")
     ).withColumn("status",lit(true))
-
+//
     //Create user failed paths(chains)
-    val data_path_fail = data_assembly_cache.select(
+    val data_path_fail = data_bulk_CHNL_cache.select(
       $"ClientID",
-      path_creator_udf($"touch_data_arr",lit("fail")).as("paths")
+      path_creator_udf($"channel_seq",lit("fail")).as("paths")
     ).withColumn("status",lit(false))
-
+//
     //Union all successfull and failed paths
     val data_path = data_path_success.union(data_path_fail)
-
+//
     //Cache DataFrame. Cause we use it DataFrame twice
     val data_path_explode = data_path.select($"status",explode($"paths").as("paths")).cache()
-
+//
     val total_conversion = data_path_explode.filter($"status" === true).count() //ACTION
-
+//
     //`status` column has Boolean type and consists of true and false values. We did pivot method to get `paths`|`true`|`false` columns
     val result = data_path_explode.
       groupBy($"paths").
       pivot($"status").
       agg(count($"status"))
-
+//
     val result_sorted = try {
       result.sort($"true".desc)
     } catch {
       case impossible_to_sort : UnsupportedOperationException => result.withColumn("true",lit(null))
       case _                  : Throwable                     => result.withColumn("true",lit(null))
     }
-
+//
     //Add `share` column . `share` column signs chain share(contribution) in  total conversions
     val result_withShare = result_sorted.withColumn("share", $"true" / lit(total_conversion))
-
+//
     val output_data = result_withShare.select(
       $"paths",
       $"true",
@@ -233,6 +253,8 @@ object ChainBuilder_v3 {
       option("header","true").
       mode("overwrite").
       save(output_path)
+
+    //---CHANNEL---
 
 
 
